@@ -554,15 +554,15 @@ function starterPlan(p){
   const before = work.map(d => (d+6)%7);
   const pick = i => off.length ? off[Math.min(i, off.length-1)] : null;
   const dateDay = pick(1), ownDay = pick(0), liftDay = pick(2), lastOff = off[off.length-1];
-  const runDays = off.filter(d => d !== dateDay && d !== liftDay);
+  const trainDays = off.filter(d => d !== dateDay);
   const blocks = [
     { id:"lift-pre", days:work, start:toT(wake+30), end:toT(wake+75), title:"Lift", domain:"body", tier:"secondary", note:"45 min full body before shift. Add weight or reps each week." },
     { id:"journal", days:[0,1,2,3,4,5,6], start:toT(wake+80), end:toT(wake+90), title:"Morning journal", domain:"marriage", tier:"secondary", note:"Answer today's prompt at the top of Today." },
     { id:"connect-work", days:work, start:toT(s1+45), end:toT(s1+60), title:"15 min with her, phone away", domain:"marriage", tier:"primary", note:"Phone in another room. Ask about her day and listen." },
     { id:"lights-out", days:before, start:toT(bed-15), end:toT(bed), title:"Wind down, lights out", domain:"recovery", tier:"recovery", note:"Early wake tomorrow. Sleep protects fat loss and your patience." },
-    { id:"run", days:runDays, start:"08:00", end:"08:45", title:"Easy run", domain:"body", tier:"secondary", note:"30 to 40 min at a pace where you can talk." },
+    { id:"lift-off", days:trainDays, start:"08:00", end:"08:45", title:"Lift", domain:"body", tier:"secondary", note:"45 min. Add weight or reps each week." },
+    { id:"run", days:trainDays, start:"08:55", end:"09:30", title:"Easy run", domain:"body", tier:"secondary", note:"30 to 35 min at a pace where you can talk." },
   ];
-  if (liftDay != null && !runDays.includes(liftDay)) blocks.push({ id:"lift-off", days:[liftDay], start:"08:00", end:"09:15", title:"Lift + short run", domain:"body", tier:"secondary", note:"Accessories and weak points, then a 20 min run." });
   if (ownDay != null) blocks.push({ id:"owned", days:[ownDay], start:"14:00", end:"14:30", title:"Owned areas", domain:"marriage", tier:"primary", note:"Handle the areas you took off her plate, start to finish." });
   if (dateDay != null) blocks.push({ id:"date", days:[dateDay], start:"18:00", end:"21:00", title:"Date night, you plan it", domain:"marriage", tier:"primary", note:"Pick it, book it, tell her the plan. She just shows up." });
   const connOff = off.filter(d => d !== dateDay);
@@ -777,7 +777,7 @@ const fmtN = n => Math.round(n).toLocaleString("en-US");
 function dayPoints(d){
   let p = 0; const j = !!(d.journal && (d.journal.text || d.journal.feeling));
   if (j) p += 10;
-  if (typeof d.weight === "number") p += 5;
+  if (typeof d.weight === "number" || typeof d.bf === "number") p += 5;
   const ck = d.checkin || {}; if (ck.mood || ck.stress || ck.energy || ck.sleep != null) p += 5;
   p += 15 * Math.min(3, (d.handled||[]).length);
   p += 5 * Math.min(5, d.toward||0);
@@ -842,6 +842,32 @@ function logbookHtml(G){
 function saveDay(ds, fn){ const d = clone(dayDoc(ds)) || { date:ds }; d.date = ds; fn(d); return Store.set("days/"+ds, d); }
 
 /* ---------- metrics ---------- */
+function bfSeries(){ return Object.values(S.days).filter(d => typeof d.bf === "number").map(d => ({ ds:d.date, v:d.bf })).sort((a,b)=>a.ds<b.ds?-1:1); }
+function latestBf(){ const s = bfSeries(); return s.length ? { ds:s[s.length-1].ds, bf:s[s.length-1].v } : null; }
+function leanNote(){
+  const b = latestBf(); if (!b) return "";
+  const w = (S.days[b.ds] && typeof S.days[b.ds].weight === "number") ? S.days[b.ds].weight : (weightSeries().slice(-1)[0]||{}).w;
+  if (!w) return "";
+  const lean = w*(1-b.bf/100), lean0 = S.profile.startWeight*(1-S.profile.startBf/100), d = round1(lean-lean0);
+  return `<span class="note num">Lean mass about ${round1(lean)} lb (${d>=0?"+":""}${d} since start)</span>`;
+}
+function chartBf(){
+  const ser = bfSeries(), p = S.profile;
+  if (ser.length < 2) return `<div class="alert info">Add body fat in the Weight tile on Today, about once a week. The trend shows up after two readings.</div>`;
+  const W=640, H=200, L=40, R=16, T=14, B=26;
+  const start = parseYmd(ser[0].ds), end = parseYmd(ser[ser.length-1].ds), span = Math.max(1, Math.round((end-start)/864e5));
+  const vals = ser.map(s=>s.v).concat([p.goalBf]);
+  const lo = Math.floor(Math.min(...vals)-1), hi = Math.ceil(Math.max(...vals)+1);
+  const x = ds => L + (W-L-R) * (Math.round((parseYmd(ds)-start)/864e5)/span), y = v => T + (H-T-B) * (1 - (v-lo)/(hi-lo));
+  let grid = ""; const step = hi-lo > 8 ? 2 : 1;
+  for (let v = Math.ceil(lo/step)*step; v <= hi; v += step) grid += `<line class="grid" x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}"/><text class="axis" x="${L-6}" y="${y(v)+3}" text-anchor="end">${v}%</text>`;
+  const line = ser.map((s,i)=>`${i?"L":"M"}${x(s.ds).toFixed(1)},${y(s.v).toFixed(1)}`).join(""), last = ser[ser.length-1];
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Body fat readings">${grid}
+    <line class="goal" x1="${L}" x2="${W-R}" y1="${y(p.goalBf)}" y2="${y(p.goalBf)}"/><text class="axis" x="${W-R}" y="${y(p.goalBf)-5}" text-anchor="end">goal ${p.goalBf}%</text>
+    <path class="avg" d="${line}"/>${ser.map(s=>`<circle class="pt" cx="${x(s.ds).toFixed(1)}" cy="${y(s.v).toFixed(1)}" r="3"/>`).join("")}
+    <circle class="end" cx="${x(last.ds).toFixed(1)}" cy="${y(last.v).toFixed(1)}" r="5"/>
+    <text class="axis" x="${L}" y="${H-8}">${esc(fmtD(start))}</text><text class="axis" x="${W-R}" y="${H-8}" text-anchor="end">${esc(fmtD(end))}</text></svg>`;
+}
 function weightSeries(){ return Object.values(S.days).filter(d => typeof d.weight === "number").map(d => ({ ds:d.date, w:d.weight })).sort((a,b)=>a.ds<b.ds?-1:1); }
 function weekStats(mon){
   const ds = [...Array(7)].map((_,i)=>ymd(addDays(mon,i)));
@@ -953,7 +979,7 @@ function viewToday(){
   // quick log tiles
   const ckBits = [ck.mood?`mood ${ck.mood}`:"", ck.sleep!=null?`${ck.sleep}h sleep`:""].filter(Boolean);
   const tiles = `<div class="tiles">
-    <button class="tile" data-act="panel" data-p="weight"><span class="t-l">Weight</span><span class="t-v num">${dd.weight ?? "–"}</span><span class="t-s">${ws.avgW!=null?`avg ${round1(ws.avgW)}`:"tap to log"}</span></button>
+    <button class="tile" data-act="panel" data-p="weight"><span class="t-l">Weight</span><span class="t-v num">${dd.weight ?? "–"}</span><span class="t-s">${[ws.avgW!=null?`avg ${round1(ws.avgW)}`:"", latestBf()?`${latestBf().bf}% bf`:""].filter(Boolean).join(" · ") || "tap to log"}</span></button>
     <button class="tile" data-act="panel" data-p="handled"><span class="t-l">Handled</span><span class="t-v num">${(dd.handled||[]).length}</span><span class="t-s">${ws.handled} this week</span></button>
     <div class="tile split"><button class="t-main" data-act="panel" data-p="toward"><span class="t-l">Turned toward</span><span class="t-v num">${dd.toward||0}</span><span class="t-s">${ws.toward} this week</span></button><button class="t-plus" data-act="toward" data-n="1" aria-label="Turned toward her, add one">+</button></div>
     <button class="tile" data-act="panel" data-p="checkin"><span class="t-l">Check-in</span><span class="t-v ${ckBits.length?"sm":""}">${ckBits.length?esc(ckBits.join(" · ")):"–"}</span><span class="t-s">${ckBits.length?"tap to change":"tap to log"}</span></button>
@@ -1009,12 +1035,17 @@ function panelHtml(){
       ${ask}${pastHtml}</form>`;
   }
   if (P.type === "weight") {
-    const recent = weightSeries().slice(-7).reverse();
-    return `<form class="sheet" data-form="weight" role="dialog" aria-modal="true" aria-label="Morning weight"><h2>Morning weight</h2>
+    const recent = Object.values(S.days).filter(d => typeof d.weight === "number" || typeof d.bf === "number").sort((a,b)=>a.date<b.date?1:-1).slice(0,7);
+    return `<form class="sheet" data-form="weight" role="dialog" aria-modal="true" aria-label="Weight and body fat"><h2>Weight and body fat</h2>
       <p class="note">Same time, after the bathroom, before food. Daily numbers swing. Watch the weekly average.</p>
-      <div class="inrow"><input type="number" inputmode="decimal" id="w-in" aria-label="Weight in pounds" aria-describedby="w-err" step="0.1" min="120" max="400" value="${dd.weight ?? ""}" placeholder="lb" style="flex:1"><button class="btn primary" type="submit">Save</button></div>
+      <div class="grid2">
+        <label class="field"><span>Weight (lb)</span><input type="number" inputmode="decimal" id="w-in" aria-describedby="w-err" step="0.1" min="120" max="400" value="${dd.weight ?? ""}" placeholder="lb"></label>
+        <label class="field"><span>Body fat % (optional)</span><input type="number" inputmode="decimal" id="bf-in" aria-describedby="w-err" step="0.1" min="3" max="50" value="${dd.bf ?? ""}" placeholder="%"></label>
+      </div>
+      <p class="note">Body fat: same scale or method each time. Once a week is plenty, it's too noisy day to day.</p>
       <p class="err" id="w-err" role="alert"></p>
-      ${recent.length?`<div class="mini">${recent.map(r=>`<span><span class="muted">${esc(fmtD(parseYmd(r.ds)))}</span><span class="num">${r.w}</span></span>`).join("")}</div>`:""}
+      <div class="inrow"><button class="btn primary" type="submit">Save</button>${close}</div>
+      ${recent.length?`<div class="mini">${recent.map(r=>`<span><span class="muted">${esc(fmtD(parseYmd(r.date)))}</span><span class="num">${typeof r.weight==="number"?r.weight+" lb":""}${typeof r.bf==="number"?`${typeof r.weight==="number"?" · ":""}${r.bf}%`:""}</span></span>`).join("")}</div>`:""}
       <div class="inrow">${close}</div></form>`;
   }
   if (P.type === "handled") {
@@ -1188,6 +1219,7 @@ function viewProgress(){
     <div class="block"><h2>Outcomes</h2>
       <div class="stats card">
         <div class="stat"><span class="eyebrow">Weekly avg weight</span><span class="v">${cur.avgW!=null?round1(cur.avgW):"–"}</span><span class="note">${delta!=null?`${delta>0?"+":""}${delta} vs last week`:`${cur.nW} weigh-ins this week`}</span></div>
+        <div class="stat"><span class="eyebrow">Body fat</span><span class="v">${latestBf()?latestBf().bf+"%":"–"}</span><span class="note">${latestBf()?`${round1(latestBf().bf-p.goalBf)} to go · started ${p.startBf}%`:`Started ${p.startBf}%, goal ${p.goalBf}%`}</span></div>
         <div class="stat"><span class="eyebrow">To goal</span><span class="v">${latest!=null?round1(latest-p.goalWeight)+" lb":"–"}</span><span class="note">Goal ${p.goalWeight} lb at ${p.goalBf}%</span></div>
         <div class="stat"><span class="eyebrow">Handled for her</span><span class="v">${cur.handled}</span><span class="note">${prev.handled} last week</span></div>
         <div class="stat"><span class="eyebrow">Turned toward</span><span class="v">${cur.toward}</span><span class="note">${prev.toward} last week</span></div>
@@ -1195,6 +1227,7 @@ function viewProgress(){
       <p class="note">Healthy pace for keeping muscle is about 0.5 to 1% of bodyweight a week, roughly 1 to 2 lb for you. Slower is fine during a recomp.</p>
     </div>
     <div class="block card"><div class="sechead"><h2>Weight, 7 day average</h2></div>${chartWeight()}</div>
+    <div class="block card"><div class="sechead"><h2>Body fat</h2>${leanNote()}</div>${chartBf()}</div>
     <div class="block card"><div class="sechead"><h2>Training, last 8 weeks</h2><span class="note num">${cur.liftMin+cur.runMin} min this week${cur.runMi?` · ${cur.runMi} mi run`:""}</span></div>${chartTraining()}${trainingNotes(cur)}</div>
     <div class="block card"><h2>Marriage, last 8 weeks</h2>${chartHandled()}</div>
     <div class="block"><h2>Activity</h2>
@@ -1502,7 +1535,15 @@ document.addEventListener("submit", e => {
   const f = e.target.closest("[data-form]"); if (!f) return; e.preventDefault();
   const kind = f.dataset.form, ds = ymd(new Date());
   if (kind === "handled") { const v = $("#h-in").value.trim(); if (!v) return; $("#h-in").value = ""; $("#h-in").blur(); saveDay(ds, d => { d.handled = (d.handled||[]).concat({ text:v, at:new Date().toISOString() }); }); toast("Added"); }
-  if (kind === "weight") { const v = parseFloat($("#w-in").value); $("#w-in").blur(); if (!(v>50 && v<500)) return fieldErr("w-in","w-err","Enter your weight in pounds, like 227.4."); fieldErr("w-in","w-err",""); saveDay(ds, d => { d.weight = v; }); closeSheet(); toast("Weight saved"); }
+  if (kind === "weight") {
+    const wr = $("#w-in").value.trim(), br = $("#bf-in").value.trim(), v = parseFloat(wr), b = parseFloat(br);
+    if (!wr && !br) return fieldErr("w-in","w-err","Enter your weight, body fat, or both.");
+    if (wr && !(v>50 && v<500)) return fieldErr("w-in","w-err","Enter your weight in pounds, like 227.4.");
+    if (br && !(b>=3 && b<=50)) return fieldErr("bf-in","w-err","Enter body fat as a percent, like 18.5.");
+    document.activeElement && document.activeElement.blur();
+    saveDay(ds, d => { if (wr) d.weight = v; if (br) d.bf = Math.round(b*10)/10; else delete d.bf; });
+    closeSheet(); toast(wr && br ? "Weight and body fat saved" : br ? "Body fat saved" : "Weight saved");
+  }
   if (kind === "sleep") { const v = parseFloat($("#s-in").value); $("#s-in").blur(); if (!(v>=0 && v<=16)) return fieldErr("s-in","s-err","Enter hours slept, like 6.5."); fieldErr("s-in","s-err",""); saveDay(ds, d => { d.checkin = d.checkin||{}; d.checkin.sleep = v; }); }
   if (kind === "journal") {
     const el = $("#j-in"), v = el.value.trim(), feel = S.jFeel || null;
